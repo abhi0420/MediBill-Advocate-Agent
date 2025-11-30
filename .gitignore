@@ -1,0 +1,5 @@
+uploads/
+orchestrator_agent/__pycache__/
+.venv/
+.env
+test*
