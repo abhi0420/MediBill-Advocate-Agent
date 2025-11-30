@@ -21,8 +21,8 @@ model = "gemini-2.5-flash"
 
 session_service = InMemorySessionService()
 
-google_search_agent = LlmAgent(
-    name="google_search_agent",
+fair_price_research_agent = LlmAgent(
+    name="fair_price_research_agent",
     model=Gemini(model=model),
     description="An agent that helps answer user queries by performing Google searches.",
     instruction="""
@@ -89,33 +89,36 @@ For EACH charge:
 
 **OUTPUT FORMAT:**
 
-For each charge, structure as:
+{
+"hospital_name": [Name],
+"patient_name": [Name],
+"procedures": [
+    { 
+         "procedure_code": [CPT code or N/A],
+         "procedure_name": [Name],
+         "billed_amount": [Amount],
+         "medicare_rate/govt_rate": [Amount or N/A],
+         "commercial_average": [Amount or N/A],
+         "overcharge_amount": [Amount or N/A],
+         "verdict": [Significantly overpriced / Overpriced / Fair / Good price],
 
-**[Procedure Name] - Code [if available]**
-Billed: $[amount]
-
-Research findings:
-- Medicare rate: $[amount] (source: [citation])
-- Commercial average: $[amount] (source: [citation])
-- Regional average: $[amount] (source: [citation])
-
-Verdict: [Fair/Overpriced/Significantly Overpriced]
-Overcharge: $[amount] ([percentage] above fair price)
-Confidence: [High/Medium/Low] based on data availability
-
----
-
-Then provide:
-- **Summary:** Total analyzed, total overcharges, total potential savings
-- **Prioritization:** Which charges to dispute first (highest savings, highest confidence)
-- **Evidence:** Key sources/citations for each overcharge
+      },
+      "summary" : {
+         "total_billed": [Sum],
+         "total_medicare": [Sum or N/A],
+         "total_commercial": [Sum or N/A],
+         "total_overcharge": [Sum or N/A],
+         "overall_verdict": [Summary verdict]
+      }
+   
+}
 """,
     tools=[google_search],
-    output_key="search_results"
+    output_key="fair_price_search_results"
 )
 
 # Use same app name to avoid mismatch warning
-runner = Runner(app_name="InMemoryRunner", agent=google_search_agent, session_service=session_service)
+runner = Runner(app_name="InMemoryRunner", agent=fair_price_research_agent, session_service=session_service)
 
 if __name__ == "__main__":
     async def main():

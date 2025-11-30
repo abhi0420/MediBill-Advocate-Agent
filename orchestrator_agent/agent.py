@@ -4,7 +4,7 @@ from google.adk.models.google_llm import Gemini
 from google.adk.artifacts import InMemoryArtifactService
 from google.adk.sessions import InMemorySessionService
 from orchestrator_agent.document_parser_agent import parse_medical_document
-from orchestrator_agent.fair_price_research_agent import google_search_agent
+from orchestrator_agent.fair_price_research_agent import fair_price_research_agent
 from google.adk.artifacts import InMemoryArtifactService
 from google.adk.plugins.save_files_as_artifacts_plugin import SaveFilesAsArtifactsPlugin
 from google.adk.tools import ToolContext, load_artifacts 
@@ -12,10 +12,34 @@ from google.adk.tools import agent_tool
 from dotenv import load_dotenv
 from orchestrator_agent.insurance_advocate_agent import insurance_advocate_agent
 import google.genai.types as types
+from pydantic import BaseModel, Field
 import os
 import asyncio
 import sys
 import logging
+
+class DenialAnalysisItem(BaseModel):
+    denied_item: str = Field(..., description="Name of the denied service or item")
+    denied_amount: str | None = Field(None, description="Amount that was denied")
+    denial_reason: str = Field(..., description="Reason given for denial")
+    policy_terms_found: str = Field(..., description="What the policy actually states")
+    verdict: str = Field(..., description="Whether denial is justified or not")
+
+class AppealStrategy(BaseModel):
+    is_appeal_recommended: bool = Field(..., description="Whether appeal is recommended")
+    appeal_deadline: str | None = Field(None, description="Deadline for appeal")
+    required_documents: list[str] = Field(default_factory=list, description="Documents needed for appeal")
+    appeal_process: str | None = Field(None, description="Steps for appeal process")
+    success_likelihood: str | None = Field(None, description="Likelihood of success")
+    key_arguments: list[str] = Field(default_factory=list, description="Key points for appeal")
+
+class InsuranceAnalysisResponse(BaseModel):
+    insurance_company: str = Field(..., description="Name of the insurance company")
+    policy_name: str = Field(..., description="Policy name")
+    policy_number: str = Field(..., description="Policy number")
+    denial_analysis: list[DenialAnalysisItem] = Field(..., description="Analysis of each denied item")
+    appeal_strategy: AppealStrategy = Field(..., description="Appeal strategy and recommendations")
+    next_steps: list[str] = Field(..., description="Actionable next steps")
 
 # Suppress non-critical warnings
 logging.basicConfig(level=logging.DEBUG)
@@ -92,83 +116,48 @@ root_agent = LlmAgent(
     model=Gemini(model=model), 
     description="Orchestrator Agent to help answer questions & co-ordinate with patients",
     instruction="""
-You are a helpful medical information advocate agent. Your role is to assist patients in understanding their medical bills, insurance claims, and related documents.
+You are a medical billing advocate orchestrator.
 
-CRITICAL RULE - ALWAYS START HERE:
-For EVERY user message, first call process_user_file.
+WORKFLOW:
 
+Step 1: Call process_user_file()
+Step 2: Call parse_medical_document()
+Step 3: Based on the output, call the appropriate agents:
+    - If only medical bill: call fair_price_research_agent
+    - If only denial letter: call insurance_advocate_agent
+    - If both: call fair_price_research_agent AND insurance_advocate_agent one after the other
 
-After process_user_file has finished its execution, check the response:
+Step 4: After all agent tools have run, you MUST:
+    - Collect the responses from each agent
+    - Present a final, clear, organized summary to the user
+    - Include both the price analysis and the denial/appeal analysis
+    - Use headings, bullet points, and formatting for clarity
 
-IF "has_files" is true:
-  1. Call parse_medical_document to extract structured data from uploaded documents
-  2. Call google_search_agent to research fair market prices for the procedures
-  3. Analyze and compare billed amounts vs fair market prices
+**Example Final Output:**
 
-  Your Analysis report should be in the following format:
-**Medical Bill Analysis:**
-- **Total Billed Amount:** [Sum of all billed amounts]
-- **Fair Market Value Total:** [Sum of researched fair prices]
-- **Overcharge Amount:** [Difference between billed and fair prices]
-- **Summary of Findings:**
-    - List each procedure with:
-        - Billed Amount
-        - Fair Market Price
-        - Overcharge (if any)
-        - Source links for price data
-- **Overall Assessment:**
-    - Is the patient being overcharged?
+---
+**Medical Bill Price Analysis**
+[Paste the output from fair_price_research_agent here]
 
-- **Next Steps:**
-    - Provide clear guidance on how to dispute charges if overcharged
+---
+**Insurance Denial & Appeal Analysis**
+[Paste the output from insurance_advocate_agent here]
 
-  4. If denial letter or user mentions insurance issues: call insurance_advocate_agent
-  5. Provide clear, empathetic explanations about findings and next steps
+**Medical Bill and Insurance denial uploaded together**
+[Paste the summary of both fair_price_research_agent and insurance_advocate_agent here]
 
-IF "has_files" is false:
-  - Respond to the user's question directly
-  - If asking about medical bills without uploading documents, politely ask them to upload
+---
 
-   Insurance analysis should be in the following format:
-**Insurance Claim Analysis:**
-- **Summary of Findings:**
-    - **Insurance Company:** [Name]
-    - **Policy Type:** [Type]
-    - **Claimed Services:** [List of services]
-    - **Denial Reasons:** [List of reasons]
-    - **Policy Coverage Analysis:** [Summary of policy terms related to denied services]
-    - **Conclusion:** [Whether denial was justified or not]
-    - **Next Steps:** [Instructions for user on how to proceed, including appeal process if applicable]
-  
-ALWAYS call process_user_file first - this is mandatory for every message!
+Always present BOTH analyses if both documents were uploaded. Do not skip or merge them. Your job is to coordinate and summarize the results for the user.
 """,
-    tools=[process_user_file, parse_medical_document, agent_tool.AgentTool(agent=google_search_agent), agent_tool.AgentTool(agent=insurance_advocate_agent)],
+    tools=[
+        process_user_file, 
+        parse_medical_document,
+        agent_tool.AgentTool(agent=fair_price_research_agent),
+        agent_tool.AgentTool(agent=insurance_advocate_agent)
+    ]
 )
 
-# cross_reference_agent = SequentialAgent(
-#     name="cross_reference_agent",
-#     description="An agent that cross-references medical bill data with fair price research and insurance analysis.",
-#     sub_agents=[google_search_agent, insurance_advocate_agent],
-#     instruction=""" 
-# You are an agent that cross-references medical bill data with fair price research and insurance analysis to provide a comprehensive report to the patient. 
-
-# You will recieve the following inputs:
-
-# 1. Medical Bill Data: Structured data extracted from the patient's medical bill, including procedure codes, descriptions, and billed amounts.
-# 2. Insurance Denial Details : Information from the patient's insurance denial letter or EOB document, including denial reasons and coverage details.
-
-# Your task is to:
-# 1. Call the google_search_agent to research fair market prices for the mentioned procedures.
-# 2. Call the insurance_advocate_agent to analyze the insurance denial details.
-# 3. Compile a comprehensive report that includes:
-# - A comparison of billed amounts vs fair market prices for each procedure.
-# - An analysis of the insurance denial in the context of the researched prices.
-# - Summarise whether the patient is being overcharged and if the insurance denial was justified.
-# - Clear next steps for the patient, including how to dispute overcharges and appeal insurance denials.
-
-#     """
-    
-# )
 
 # Set up Artifact Service for handling   uploaded files
 artifact_service = InMemoryArtifactService()
@@ -189,7 +178,7 @@ async def main():
     response = await runner.run_debug(
         "I've uploaded a medical bill image. Can you help me understand if I'm being overcharged?"
     )
-    print(response)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
